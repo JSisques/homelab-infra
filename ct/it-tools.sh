@@ -12,7 +12,7 @@ CT_CORES=1
 CT_DISK=4
 CT_IP="192.168.1.100/24"
 CT_GW="192.168.1.1"
-TEMPLATE="local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+TEMPLATE="local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst"
 
 # ─── Create LXC ───────────────────────────────────────
 echo "Creating LXC ${CT_NAME}..."
