@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # it-tools LXC installer
-# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/.../it-tools.sh)"
+# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/JSisques/homelab-infra/main/ct/it-tools.sh)"
 
 set -euo pipefail
 
