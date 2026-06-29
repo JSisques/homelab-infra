@@ -1,0 +1,14 @@
+tunnel: homelab-tunnel
+credentials-file: /root/.cloudflared/homelab.json
+
+ingress:
+  - hostname: n8n.midominio.com
+    service: http://192.168.1.20:80
+
+  - hostname: grafana.midominio.com
+    service: http://192.168.1.20:80
+
+  - hostname: api.midominio.com
+    service: http://192.168.1.20:80
+
+  - service: http_status:404
