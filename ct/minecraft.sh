@@ -9,12 +9,13 @@ INSTALL_DIR="/opt/minecraft"
 MC_USER="minecraft"
 RAM_MIN="2G"
 RAM_MAX="4G"
+MC_PORT="25565"
 
 echo "Actualizando sistema..."
 apt update && apt upgrade -y
 
 echo "Instalando dependencias..."
-apt install -y curl jq screen openjdk-21-jre-headless
+apt install -y curl jq screen openjdk-21-jre-headless ufw
 
 if ! id "$MC_USER" &>/dev/null; then
     echo "Creando usuario minecraft..."
@@ -52,6 +53,10 @@ chmod +x start.sh
 echo "Asignando permisos..."
 chown -R $MC_USER:$MC_USER $INSTALL_DIR
 
+echo "Configurando firewall..."
+ufw allow ${MC_PORT}/tcp
+ufw --force enable
+
 echo "Creando servicio systemd..."
 cat > /etc/systemd/system/minecraft.service <<EOF
 [Unit]
@@ -75,6 +80,7 @@ systemctl start minecraft
 
 echo ""
 echo "Instalación completada."
+echo "Puerto abierto: ${MC_PORT}"
 echo "Comandos útiles:"
 echo "systemctl status minecraft"
 echo "journalctl -u minecraft -f"
