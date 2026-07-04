@@ -175,6 +175,13 @@ systemctl start minecraft
 echo ">>> [LXC] Installation complete. Service status:"
 sleep 3
 systemctl status minecraft --no-pager || true
+
+echo ">>> [LXC] Installing Prometheus node_exporter agent..."
+if curl -fsSL https://raw.githubusercontent.com/JSisques/homelab-infra/refs/heads/main/ct/node-exporter.sh -o /tmp/node-exporter.sh; then
+  bash /tmp/node-exporter.sh || echo "    WARNING: node_exporter install script failed, continuing anyway."
+else
+  echo "    WARNING: could not download node-exporter.sh, skipping monitoring agent."
+fi
 INNEREOF
 
 # Substitute variables inside the inner script before pushing it
@@ -195,6 +202,7 @@ echo "================================================================"
 echo " Done! PaperMC server running in LXC $CTID ($HOSTNAME)"
 echo " Container IP: $CT_IP"
 echo " Minecraft port: $MC_PORT"
+echo " Node Exporter metrics: http://$CT_IP:9100/metrics"
 echo ""
 echo " Useful commands:"
 echo "   pct exec $CTID -- systemctl status minecraft"
