@@ -1,140 +1,199 @@
 #!/usr/bin/env bash
+#
+# create-papermc-lxc.sh
+# ----------------------------------------------------------------------------
+# Ejecutar en la SHELL DEL NODO PROXMOX (no dentro de un LXC).
+# Crea un LXC Debian 12 y le instala Java + PaperMC (última versión estable)
+# con un servicio systemd, listo para arrancar.
+#
+# Uso:
+#   chmod +x create-papermc-lxc.sh
+#   ./create-papermc-lxc.sh
+# ----------------------------------------------------------------------------
 
 set -euo pipefail
 
-# Configuración
-MC_VERSION="1.21.1"
-PAPER_BUILD="latest"
-INSTALL_DIR="/opt/minecraft"
-MC_USER="minecraft"
-RAM_MIN="2G"
-RAM_MAX="8G"
+### ==================== CONFIGURACIÓN (edítala si quieres) ====================
+CTID="200"                     # ID del LXC. Cambia si ya usas ese ID (pct list para ver los que hay)
+HOSTNAME="minecraft-papermc"
+STORAGE="local-lvm"            # Storage donde vivirá el disco del LXC
+TEMPLATE_STORAGE="local"       # Storage donde Proxmox guarda las plantillas (vztmpl)
+DISK_SIZE_GB="20"
+CORES="3"
+RAM_MB="8192"
+SWAP_MB="512"
+BRIDGE="vmbr0"                 # Cambia si tu bridge se llama distinto
+NET_CONFIG="name=eth0,bridge=${BRIDGE},ip=dhcp"
+UNPRIVILEGED="1"
+
 MC_PORT="25565"
+JVM_XMS="2G"
+JVM_XMX="6G"                   # Dejamos ~2GB de margen para el SO sobre los 8GB del LXC
+### ==============================================================================
 
-echo "Actualizando sistema..."
-apt update && apt upgrade -y
+echo ">>> Actualizando catálogo de plantillas LXC..."
+pveam update >/dev/null
 
-echo "Instalando dependencias base..."
-apt install -y curl jq screen ufw wget gnupg ca-certificates lsb-release
+echo ">>> Buscando la última plantilla de Debian 12..."
+TEMPLATE=$(pveam available --section system | grep "debian-12-standard" | awk '{print $2}' | sort -V | tail -n1)
 
-install_java() {
-    echo "Intentando instalar OpenJDK 21..."
-
-    # Evita que set -e rompa el script si falla
-    set +e
-    apt install -y openjdk-21-jre-headless
-    JAVA_STATUS=$?
-    set -e
-
-    if [ $JAVA_STATUS -eq 0 ]; then
-        echo "OpenJDK 21 instalado correctamente."
-        return
-    fi
-
-    echo "OpenJDK 21 no disponible. Instalando Temurin 21..."
-
-    DISTRO_CODENAME=$(lsb_release -cs)
-
-    wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public \
-        | gpg --dearmor -o /etc/apt/trusted.gpg.d/adoptium.gpg
-
-    echo "deb https://packages.adoptium.net/artifactory/deb ${DISTRO_CODENAME} main" \
-        > /etc/apt/sources.list.d/adoptium.list
-
-    apt update
-    apt install -y temurin-21-jre
-
-    echo "Temurin 21 instalado correctamente."
-}
-
-install_java
-
-echo "Java instalado:"
-java -version
-
-if ! id "$MC_USER" &>/dev/null; then
-    echo "Creando usuario minecraft..."
-    useradd -r -m -U -d "$INSTALL_DIR" -s /bin/bash "$MC_USER"
+if [ -z "$TEMPLATE" ]; then
+  echo "ERROR: no se encontró ninguna plantilla debian-12-standard. Revisa 'pveam available'."
+  exit 1
 fi
 
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+echo "    Plantilla seleccionada: $TEMPLATE"
 
-echo "Obteniendo última build de PaperMC..."
+if ! pveam list "$TEMPLATE_STORAGE" | grep -q "$TEMPLATE"; then
+  echo ">>> Descargando plantilla (no estaba en local)..."
+  pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
+fi
 
-if [ "$PAPER_BUILD" = "latest" ]; then
-    BUILD=$(curl -fsSL "https://api.papermc.io/v2/projects/paper/versions/${MC_VERSION}" \
-        | jq '.builds[-1]')
+if pct status "$CTID" &>/dev/null; then
+  echo "ERROR: ya existe un contenedor con CTID=$CTID. Cambia la variable CTID en el script."
+  exit 1
+fi
+
+echo ">>> Creando LXC $CTID ($HOSTNAME)..."
+pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
+  --hostname "$HOSTNAME" \
+  --cores "$CORES" \
+  --memory "$RAM_MB" \
+  --swap "$SWAP_MB" \
+  --net0 "$NET_CONFIG" \
+  --rootfs "${STORAGE}:${DISK_SIZE_GB}" \
+  --unprivileged "$UNPRIVILEGED" \
+  --features nesting=1 \
+  --onboot 1
+
+echo ">>> Arrancando LXC..."
+pct start "$CTID"
+
+echo ">>> Esperando a que arranque y tenga red (15s)..."
+sleep 15
+
+# Comprobación básica de red dentro del contenedor
+for i in $(seq 1 10); do
+  if pct exec "$CTID" -- getent hosts api.papermc.io &>/dev/null; then
+    break
+  fi
+  echo "    Esperando red dentro del LXC... ($i/10)"
+  sleep 3
+done
+
+### ==================== SCRIPT INTERNO (se ejecuta DENTRO del LXC) ====================
+cat > /tmp/install-papermc-inner.sh <<'INNEREOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+MC_USER="minecraft"
+MC_DIR="/opt/minecraft"
+JVM_XMS="__JVM_XMS__"
+JVM_XMX="__JVM_XMX__"
+MC_PORT="__MC_PORT__"
+
+echo ">>> [LXC] Actualizando paquetes..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get upgrade -y
+
+echo ">>> [LXC] Instalando dependencias (Java 21, curl, jq)..."
+apt-get install -y curl jq ca-certificates
+
+# Java 21 (Bookworm backports no siempre trae 21 en repos estándar; usamos el paquete oficial de Debian si existe, si no, backports)
+if apt-cache show openjdk-21-jre-headless &>/dev/null; then
+  apt-get install -y openjdk-21-jre-headless
 else
-    BUILD="$PAPER_BUILD"
+  echo ">>> [LXC] openjdk-21 no está en repos estándar, añadiendo backports..."
+  echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list
+  apt-get update -y
+  apt-get install -y -t bookworm-backports openjdk-21-jre-headless
 fi
 
-DOWNLOAD_URL="https://api.papermc.io/v2/projects/paper/versions/${MC_VERSION}/builds/${BUILD}/downloads/paper-${MC_VERSION}-${BUILD}.jar"
-
-echo "Descargando Paper build ${BUILD}..."
-curl -fsSL -o paper.jar "$DOWNLOAD_URL"
-
-if [ ! -f paper.jar ]; then
-    echo "Error descargando PaperMC"
-    exit 1
+echo ">>> [LXC] Creando usuario de servicio '$MC_USER'..."
+if ! id "$MC_USER" &>/dev/null; then
+  useradd -r -m -d "$MC_DIR" -s /usr/sbin/nologin "$MC_USER"
 fi
 
-echo "Aceptando EULA..."
-echo "eula=true" > eula.txt
+mkdir -p "$MC_DIR"
 
-echo "Configurando server.properties..."
-cat > server.properties <<EOF
+echo ">>> [LXC] Consultando última versión estable de PaperMC..."
+API="https://api.papermc.io/v2/projects/paper"
+LATEST_VERSION=$(curl -s "$API" | jq -r '.versions[-1]')
+LATEST_BUILD=$(curl -s "${API}/versions/${LATEST_VERSION}" | jq -r '.builds[-1]')
+JAR_NAME="paper-${LATEST_VERSION}-${LATEST_BUILD}.jar"
+
+echo "    Versión Minecraft: $LATEST_VERSION  |  Build Paper: $LATEST_BUILD"
+
+echo ">>> [LXC] Descargando $JAR_NAME..."
+curl -sL -o "${MC_DIR}/paper.jar" \
+  "${API}/versions/${LATEST_VERSION}/builds/${LATEST_BUILD}/downloads/${JAR_NAME}"
+
+echo ">>> [LXC] Aceptando EULA..."
+echo "eula=true" > "${MC_DIR}/eula.txt"
+
+# server.properties básico (se puede editar luego a mano)
+if [ ! -f "${MC_DIR}/server.properties" ]; then
+  cat > "${MC_DIR}/server.properties" <<PROPS
 server-port=${MC_PORT}
-motd=PaperMC Server
-enable-status=true
-EOF
+enable-command-block=false
+motd=Servidor PaperMC gestionado
+online-mode=true
+PROPS
+fi
 
-echo "Creando script de inicio..."
-cat > start.sh <<EOF
-#!/bin/bash
-exec java -Xms${RAM_MIN} -Xmx${RAM_MAX} -XX:+UseG1GC -jar paper.jar nogui
-EOF
+chown -R "${MC_USER}:${MC_USER}" "$MC_DIR"
 
-chmod +x start.sh
-
-echo "Asignando permisos..."
-chown -R "$MC_USER:$MC_USER" "$INSTALL_DIR"
-
-echo "Configurando firewall..."
-ufw allow OpenSSH
-ufw allow "${MC_PORT}/tcp"
-ufw --force enable
-
-echo "Creando servicio systemd..."
-cat > /etc/systemd/system/minecraft.service <<EOF
+echo ">>> [LXC] Creando servicio systemd..."
+cat > /etc/systemd/system/minecraft.service <<SERVICE
 [Unit]
-Description=Minecraft Paper Server
+Description=Minecraft PaperMC Server
 After=network.target
 
 [Service]
 User=${MC_USER}
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/start.sh
-Restart=always
+WorkingDirectory=${MC_DIR}
+ExecStart=/usr/bin/java -Xms${JVM_XMS} -Xmx${JVM_XMX} -XX:+UseG1GC -jar paper.jar nogui
+Restart=on-failure
 RestartSec=10
-SuccessExitStatus=0 1
-KillMode=process
+StandardInput=null
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE
 
 systemctl daemon-reload
 systemctl enable minecraft
 systemctl start minecraft
 
+echo ">>> [LXC] Instalación completada. Estado del servicio:"
+sleep 3
+systemctl status minecraft --no-pager || true
+INNEREOF
+
+# Sustituir variables dentro del script interno antes de enviarlo
+sed -i "s/__JVM_XMS__/${JVM_XMS}/" /tmp/install-papermc-inner.sh
+sed -i "s/__JVM_XMX__/${JVM_XMX}/" /tmp/install-papermc-inner.sh
+sed -i "s/__MC_PORT__/${MC_PORT}/" /tmp/install-papermc-inner.sh
+
+echo ">>> Copiando script de instalación al LXC..."
+pct push "$CTID" /tmp/install-papermc-inner.sh /root/install-papermc-inner.sh
+
+echo ">>> Ejecutando instalación dentro del LXC (esto tarda unos minutos)..."
+pct exec "$CTID" -- bash /root/install-papermc-inner.sh
+
+CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
+
 echo ""
-echo "Instalación completada."
-echo "Version: ${MC_VERSION}"
-echo "Puerto abierto: ${MC_PORT}"
+echo "================================================================"
+echo " ¡Listo! Servidor PaperMC funcionando en el LXC $CTID ($HOSTNAME)"
+echo " IP del contenedor: $CT_IP"
+echo " Puerto Minecraft:  $MC_PORT"
 echo ""
-echo "Comandos útiles:"
-echo "systemctl status minecraft"
-echo "journalctl -u minecraft -f"
-echo "systemctl restart minecraft"
-echo "systemctl stop minecraft"
+echo " Comandos útiles:"
+echo "   pct exec $CTID -- systemctl status minecraft"
+echo "   pct exec $CTID -- journalctl -u minecraft -f"
+echo "   pct exec $CTID -- systemctl restart minecraft"
+echo ""
+echo " server.properties en: /opt/minecraft/server.properties (dentro del LXC)"
+echo "================================================================"
