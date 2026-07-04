@@ -97,17 +97,18 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
 
-echo ">>> [LXC] Instalando dependencias (Java 21, curl, jq)..."
+echo ">>> [LXC] Instalando dependencias (curl, jq)..."
 apt-get install -y curl jq ca-certificates
 
-# Java 21 (Bookworm backports no siempre trae 21 en repos estándar; usamos el paquete oficial de Debian si existe, si no, backports)
-if apt-cache show openjdk-21-jre-headless &>/dev/null; then
-  apt-get install -y openjdk-21-jre-headless
+echo ">>> [LXC] Instalando Java 21 (viene en bookworm-backports, no en el repo estándar)..."
+echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list
+apt-get update -y
+
+if apt-get install -y -t bookworm-backports openjdk-21-jre-headless; then
+  echo "    Java 21 instalado desde backports."
 else
-  echo ">>> [LXC] openjdk-21 no está en repos estándar, añadiendo backports..."
-  echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list
-  apt-get update -y
-  apt-get install -y -t bookworm-backports openjdk-21-jre-headless
+  echo "    AVISO: no se pudo instalar Java 21, usando openjdk-17-jre-headless (puede no ser compatible con builds de Paper muy recientes)."
+  apt-get install -y openjdk-17-jre-headless
 fi
 
 echo ">>> [LXC] Creando usuario de servicio '$MC_USER'..."
