@@ -15,22 +15,30 @@ echo "Actualizando sistema..."
 apt update && apt upgrade -y
 
 echo "Instalando dependencias base..."
-apt install -y curl jq screen ufw wget gnupg ca-certificates
+apt install -y curl jq screen ufw wget gnupg ca-certificates lsb-release
 
 install_java() {
     echo "Intentando instalar OpenJDK 21..."
 
-    if apt install -y openjdk-21-jre-headless; then
+    # Evita que set -e rompa el script si falla
+    set +e
+    apt install -y openjdk-21-jre-headless
+    JAVA_STATUS=$?
+    set -e
+
+    if [ $JAVA_STATUS -eq 0 ]; then
         echo "OpenJDK 21 instalado correctamente."
         return
     fi
 
     echo "OpenJDK 21 no disponible. Instalando Temurin 21..."
 
+    DISTRO_CODENAME=$(lsb_release -cs)
+
     wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public \
         | gpg --dearmor -o /etc/apt/trusted.gpg.d/adoptium.gpg
 
-    echo "deb https://packages.adoptium.net/artifactory/deb bookworm main" \
+    echo "deb https://packages.adoptium.net/artifactory/deb ${DISTRO_CODENAME} main" \
         > /etc/apt/sources.list.d/adoptium.list
 
     apt update
