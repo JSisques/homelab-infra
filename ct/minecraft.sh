@@ -8,7 +8,7 @@ PAPER_BUILD="latest"
 INSTALL_DIR="/opt/minecraft"
 MC_USER="minecraft"
 RAM_MIN="2G"
-RAM_MAX="4G"
+RAM_MAX="8G"
 MC_PORT="25565"
 
 echo "Actualizando sistema..."
